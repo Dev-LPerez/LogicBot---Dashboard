@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
-  collection, query, onSnapshot, addDoc, where
+  collection, query, onSnapshot, addDoc, orderBy, updateDoc, doc
 } from 'firebase/firestore';
 import {
   signInAnonymously, onAuthStateChanged
 } from 'firebase/auth';
-import { db, auth } from './firebase'; // Importamos la config local
+import { db, auth } from './firebase';
 import {
   Users, BookOpen, AlertTriangle, Activity,
-  Search, Plus, Copy, LogOut, CheckCircle,
-  ShieldAlert, Clock, Award, BarChart2
+  Search, Plus, LogOut, CheckCircle,
+  ShieldAlert, Clock, Award, BarChart2, Bell, X, FileText
 } from 'lucide-react';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
@@ -60,6 +60,11 @@ export default function App() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newClassName, setNewClassName] = useState("");
   const [selectedStudent, setSelectedStudent] = useState(null);
+
+  // --- NUEVOS ESTADOS PARA NOTIFICACIONES ---
+  const [alerts, setAlerts] = useState([]);
+  const [showAlertsPanel, setShowAlertsPanel] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // 1. Autenticación (Simulada para Docente según Plan Fase 2)
   useEffect(() => {
@@ -119,6 +124,28 @@ export default function App() {
     return () => unsubscribe();
   }, [selectedClass]);
 
+  // 4. ✅ NUEVO: ESCUCHAR ALERTAS DE SEGURIDAD (GLOBAL)
+  useEffect(() => {
+    if (!user) return;
+
+    // Escuchamos la colección de alertas ordenadas por fecha
+    const alertsRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'alerts');
+    const q = query(alertsRef, orderBy('creado_en', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const newAlerts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAlerts(newAlerts);
+
+      // Contar no leídas
+      const unread = newAlerts.filter(a => !a.leida).length;
+      setUnreadCount(unread);
+    }, (error) => {
+      console.error("Error listening to alerts:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
   // --- LÓGICA DE NEGOCIO ---
 
   const handleCreateClass = async () => {
@@ -158,6 +185,166 @@ export default function App() {
     if (percentage >= 50) return "bg-yellow-400"; // En Proceso
     return "bg-red-400"; // Riesgo
   };
+
+  const handleMarkAsRead = async (alertId) => {
+    try {
+      const alertRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'alerts', alertId);
+      await updateDoc(alertRef, { leida: true });
+    } catch (e) {
+      console.error("Error marcando alerta como leída", e);
+    }
+  };
+
+  // --- COMPONENTE DE NOTIFICACIONES DROPDOWN ---
+  const AlertsDropdown = () => (
+    <div className="absolute right-0 mt-2 w-96 bg-white rounded-xl shadow-2xl border border-gray-200 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+        <h3 className="font-bold text-gray-700 flex items-center gap-2">
+          <ShieldAlert size={16} className="text-red-500"/> Alertas de Integridad
+        </h3>
+        <button onClick={() => setShowAlertsPanel(false)} className="text-gray-400 hover:text-gray-600">
+          <X size={16}/>
+        </button>
+      </div>
+
+      <div className="max-h-[400px] overflow-y-auto">
+        {alerts.length === 0 ? (
+          <div className="p-6 text-center text-gray-400 text-sm">
+            No hay alertas recientes.
+          </div>
+        ) : (
+          alerts.slice(0, 5).map(alert => (
+            <div
+              key={alert.id}
+              className={`p-4 border-b border-gray-100 hover:bg-gray-50 transition relative ${!alert.leida ? 'bg-red-50/30' : ''}`}
+            >
+              {!alert.leida && <div className="absolute top-4 right-4 w-2 h-2 bg-red-500 rounded-full"></div>}
+
+              <div className="flex justify-between items-start mb-1">
+                <span className="text-xs font-bold text-red-600 uppercase tracking-wider border border-red-200 px-1 rounded bg-red-50">
+                  Velocidad Anormal
+                </span>
+                <span className="text-[10px] text-gray-400">
+                  {new Date(alert.timestamp_alerta || alert.creado_en).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </span>
+              </div>
+
+              <p className="text-sm font-bold text-gray-800 mb-1">{alert.nombre_estudiante}</p>
+
+              <div className="text-xs text-gray-600 space-y-1 mb-2">
+                <p>⚡ Respondió en <span className="font-bold text-red-600">{alert.tiempo_tomado}s</span></p>
+                <p className="opacity-80">(Estimado IA: {alert.tiempo_estimado}s)</p>
+              </div>
+
+              <div className="bg-gray-100 p-2 rounded text-[10px] font-mono text-gray-700 truncate">
+                {alert.respuesta_estudiante}
+              </div>
+
+              {!alert.leida && (
+                <button
+                  onClick={() => handleMarkAsRead(alert.id)}
+                  className="mt-2 text-xs text-blue-600 hover:underline font-medium"
+                >
+                  Marcar como vista
+                </button>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
+  // --- COMPONENTE DE TARJETA DE ALERTA (REUTILIZABLE) ---
+  const AlertList = ({ filteredAlerts, showStudentName = true }) => (
+    <div className="space-y-4">
+      {filteredAlerts.length === 0 ? (
+        <div className="text-center py-10 text-gray-400 bg-gray-50/50 rounded-xl border border-dashed border-gray-200">
+          <ShieldAlert className="mx-auto mb-2 opacity-50" size={32} />
+          <p className="text-sm">No hay reportes de integridad registrados.</p>
+        </div>
+      ) : (
+        filteredAlerts.map(alert => (
+          <div key={alert.id} className={`bg-white border rounded-lg p-4 shadow-sm transition relative overflow-hidden group ${alert.leida ? 'border-gray-200 opacity-80' : 'border-red-200 ring-1 ring-red-50'}`}>
+            {/* Indicador lateral de severidad */}
+            <div className={`absolute top-0 left-0 w-1 h-full ${alert.leida ? 'bg-gray-300' : 'bg-red-500'}`}></div>
+
+            {/* Cabecera */}
+            <div className="flex justify-between items-start mb-3 pl-2">
+                <div>
+                    {showStudentName && <h4 className="font-bold text-gray-800 text-sm">{alert.nombre_estudiante}</h4>}
+                    <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded border border-red-200 uppercase tracking-wide">
+                            Velocidad Anormal
+                        </span>
+                        {!alert.leida && <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
+                    </div>
+                </div>
+                <div className="text-right">
+                    <p className="text-[10px] text-gray-400 flex items-center justify-end gap-1">
+                        <Clock size={10}/> Reportado: {new Date(alert.timestamp_alerta || alert.creado_en).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                    </p>
+                    <p className="text-[10px] text-gray-500 font-medium">
+                        Fecha: {new Date(alert.timestamp_alerta || alert.creado_en).toLocaleDateString()}
+                    </p>
+                </div>
+            </div>
+
+            {/* Datos Forenses */}
+            <div className="grid grid-cols-2 gap-3 mb-3 bg-gray-50 p-3 rounded border border-gray-100 ml-2">
+                <div>
+                    <p className="text-[10px] uppercase text-gray-400 font-bold mb-1">Análisis Temporal</p>
+                    <div className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                            <span className="text-gray-500">Estimado IA:</span>
+                            <span className="font-mono font-bold text-gray-700">{alert.tiempo_estimado}s</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                            <span className="text-gray-500">Realizado:</span>
+                            <span className="font-mono font-bold text-red-600 bg-red-50 px-1 rounded">{alert.tiempo_tomado}s</span>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <p className="text-[10px] uppercase text-gray-400 font-bold mb-1">Contexto</p>
+                    <p className="text-[10px] text-gray-500">
+                        Inicio: {alert.timestamp_envio ? new Date(alert.timestamp_envio).toLocaleTimeString() : 'N/A'}
+                    </p>
+                </div>
+            </div>
+
+            {/* Evidencia: Reto y Respuesta */}
+            <div className="space-y-2 ml-2">
+                <div>
+                    <p className="text-[10px] font-bold text-gray-500 uppercase">Reto Asignado</p>
+                    <p className="text-xs text-gray-700 italic line-clamp-2 hover:line-clamp-none transition-all cursor-help bg-white border border-gray-100 p-2 rounded">
+                        "{alert.reto_enunciado}"
+                    </p>
+                </div>
+                <div>
+                    <p className="text-[10px] font-bold text-gray-500 uppercase">Código Enviado</p>
+                    <pre className="bg-slate-900 text-green-400 p-2 rounded text-[10px] font-mono overflow-x-auto whitespace-pre-wrap max-h-24 overflow-y-auto custom-scrollbar border border-slate-700">
+                        {alert.respuesta_estudiante}
+                    </pre>
+                </div>
+            </div>
+
+            {/* Acciones */}
+            {!alert.leida && (
+                <div className="flex justify-end mt-3 border-t border-gray-100 pt-2">
+                    <button
+                        onClick={() => handleMarkAsRead(alert.id)}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1 hover:bg-blue-50 px-2 py-1 rounded transition"
+                    >
+                        <CheckCircle size={14} /> Marcar como revisado
+                    </button>
+                </div>
+            )}
+          </div>
+        ))
+      )}
+    </div>
+  );
 
   // --- VISTAS ---
 
@@ -517,9 +704,10 @@ export default function App() {
   const renderStudentDetail = () => {
     if (!selectedStudent) return null;
     const historial = JSON.parse(selectedStudent.historial_chat || '[]');
+    const studentAlerts = alerts.filter(a => a.estudiante_id === selectedStudent.numero_telefono);
 
     return (
-      <div className="space-y-6 animate-in slide-in-from-right duration-300 max-w-5xl mx-auto">
+      <div className="space-y-6 animate-in slide-in-from-right duration-300 max-w-7xl mx-auto">
         <button
           onClick={() => setView('dashboard')}
           className="text-gray-500 hover:text-blue-600 text-sm flex items-center gap-1 font-medium transition"
@@ -527,93 +715,58 @@ export default function App() {
           ← Volver al Dashboard
         </button>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          {/* Header del Estudiante */}
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 text-white">
-            <div className="flex flex-col md:flex-row justify-between items-start gap-4">
-              <div>
-                <h1 className="text-3xl font-bold tracking-tight">{selectedStudent.nombre}</h1>
-                <div className="flex flex-wrap items-center gap-4 mt-2 opacity-90 text-sm">
-                  <span className="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full"><Users size={14} /> {selectedStudent.numero_telefono}</span>
-                  <span className="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full"><Clock size={14} /> Última vez: {selectedStudent.ultima_conexion}</span>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* PERFIL Y CHAT */}
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              {/* Header del Estudiante */}
+              <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 text-white">
+                <div className="flex flex-col md:flex-row justify-between items-start gap-4">
+                  <div>
+                    <h1 className="text-3xl font-bold tracking-tight">{selectedStudent.nombre}</h1>
+                    <div className="flex flex-wrap items-center gap-4 mt-2 opacity-90 text-sm">
+                      <span className="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full"><Users size={14} /> {selectedStudent.numero_telefono}</span>
+                      <span className="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full"><Clock size={14} /> Última vez: {selectedStudent.ultima_conexion}</span>
+                    </div>
+                  </div>
+                  <div className="text-right bg-white/10 p-4 rounded-xl backdrop-blur-sm border border-white/20">
+                    <div className="text-3xl font-bold">{selectedStudent.puntos} <span className="text-base font-normal opacity-80">pts</span></div>
+                    <div className="text-sm font-medium text-blue-200">Nivel General {selectedStudent.nivel}</div>
+                  </div>
                 </div>
               </div>
-              <div className="text-right bg-white/10 p-4 rounded-xl backdrop-blur-sm border border-white/20">
-                <div className="text-3xl font-bold">{selectedStudent.puntos} <span className="text-base font-normal opacity-80">pts</span></div>
-                <div className="text-sm font-medium text-blue-200">Nivel General {selectedStudent.nivel}</div>
+
+              <div className="p-6">
+                <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2"><Search size={18} className="text-blue-600"/> Code Playback</h3>
+                <div className="bg-gray-50 rounded-xl p-4 max-h-[500px] overflow-y-auto space-y-4 border border-gray-200">
+                  {historial.length === 0 ? <p className="text-center text-gray-400 text-sm">Sin historial reciente.</p> :
+                   historial.map((msg, i) => (
+                      <div key={i} className={`flex ${msg.usuario ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`p-3 rounded-2xl text-sm max-w-[85%] ${msg.usuario ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'}`}>
+                              <p className={`text-[10px] font-bold mb-1 uppercase tracking-wider ${msg.usuario ? 'text-blue-200' : 'text-gray-400'}`}>{msg.usuario ? 'Estudiante' : 'LogicBot'}</p>
+                              <pre className={`whitespace-pre-wrap font-mono text-xs overflow-x-auto p-2 rounded ${msg.usuario ? 'bg-blue-700' : 'bg-gray-100'}`}>{msg.usuario || msg.bot}</pre>
+                          </div>
+                      </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-8">
-            {/* Code Playback / Historial (Análisis Forense) */}
-            <div className="md:col-span-2 space-y-4">
-               <div className="flex items-center justify-between">
-                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                    <Search size={18} className="text-blue-600" /> Code Playback
-                 </h3>
-                 <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">Últimas interacciones</span>
-               </div>
+          {/* HISTORIAL DE ALERTAS DEL ESTUDIANTE - HOJA DE VIDA */}
+          <div className="space-y-6">
+            <Card className="border-t-4 border-t-red-500 h-full flex flex-col">
+              <div className="mb-4">
+                <h3 className="text-lg font-bold flex items-center gap-2 text-gray-800">
+                  <FileText className="text-red-500"/> Historial de Reportes
+                </h3>
+                <p className="text-xs text-gray-500">Hoja de vida de integridad académica.</p>
+              </div>
 
-               <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 max-h-[500px] overflow-y-auto space-y-4 scrollbar-thin">
-                  {historial.length === 0 ? (
-                    <div className="text-center py-10 text-gray-400">
-                      <p>No hay historial de chat reciente para analizar.</p>
-                    </div>
-                  ) : (
-                    historial.map((msg, i) => (
-                      <div key={i} className={`flex ${msg.usuario ? 'justify-end' : 'justify-start'}`}>
-                         <div className={`max-w-[85%] rounded-2xl p-4 text-sm shadow-sm ${
-                           msg.usuario 
-                             ? 'bg-blue-600 text-white rounded-br-none' 
-                             : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'
-                         }`}>
-                            {msg.usuario && <p className="text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider">Estudiante</p>}
-                            {!msg.usuario && <p className="text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">LogicBot AI</p>}
-                            <pre className={`whitespace-pre-wrap font-mono text-xs overflow-x-auto p-2 rounded ${msg.usuario ? 'bg-blue-700' : 'bg-gray-100'}`}>
-                              {msg.usuario || msg.bot}
-                            </pre>
-                         </div>
-                      </div>
-                    ))
-                  )}
-               </div>
-            </div>
-
-            {/* Métricas Laterales */}
-            <div className="space-y-6">
-               <Card className="bg-gray-50 border-gray-200">
-                 <h4 className="font-bold text-gray-800 mb-4 border-b border-gray-200 pb-2">Integridad Académica</h4>
-                 <div className="space-y-6">
-                   <div>
-                     <div className="flex justify-between text-sm mb-2">
-                       <span className="text-gray-600">Autonomía</span>
-                       <span className="font-bold text-gray-900">{calculateAutonomy(selectedStudent)}%</span>
-                     </div>
-                     <div className="w-full bg-gray-200 rounded-full h-2.5">
-                       <div
-                         className={`h-2.5 rounded-full transition-all duration-500 ${getStatusColor(calculateAutonomy(selectedStudent))}`}
-                         style={{ width: `${calculateAutonomy(selectedStudent)}%` }}
-                       ></div>
-                     </div>
-                     <p className="text-xs text-gray-500 mt-2 leading-relaxed">
-                       Porcentaje de retos resueltos sin solicitar pistas a la IA.
-                     </p>
-                   </div>
-
-                   <div className="grid grid-cols-2 gap-4 pt-2">
-                      <div className="bg-white p-3 rounded-lg border border-gray-200 text-center">
-                        <span className="block text-2xl font-bold text-gray-900">{selectedStudent.retos_completados || 0}</span>
-                        <span className="text-xs text-gray-500 uppercase font-bold">Retos</span>
-                      </div>
-                      <div className="bg-white p-3 rounded-lg border border-gray-200 text-center">
-                        <span className="block text-2xl font-bold text-orange-500">{selectedStudent.pistas_usadas || 0}</span>
-                        <span className="text-xs text-gray-500 uppercase font-bold">Pistas</span>
-                      </div>
-                   </div>
-                 </div>
-               </Card>
-            </div>
+              <div className="flex-1 overflow-y-auto pr-1 max-h-[600px] custom-scrollbar">
+                <AlertList filteredAlerts={studentAlerts} showStudentName={false} />
+              </div>
+            </Card>
           </div>
         </div>
       </div>
@@ -646,6 +799,21 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-6">
+          {/* 🔔 BOTÓN DE NOTIFICACIONES */}
+          <div className="relative">
+            <button
+              onClick={() => setShowAlertsPanel(!showAlertsPanel)}
+              className="p-2 text-gray-500 hover:text-blue-600 hover:bg-gray-100 rounded-full transition relative"
+            >
+              <Bell size={22} />
+              {unreadCount > 0 && (
+                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
+              )}
+            </button>
+            {/* Panel Dropdown */}
+            {showAlertsPanel && <AlertsDropdown />}
+          </div>
+
           <div className="hidden md:block text-right border-r border-gray-200 pr-6">
             <p className="text-sm font-bold text-gray-800">Profesor Demo</p>
             <p className="text-xs text-gray-500 flex items-center gap-1 justify-end">
